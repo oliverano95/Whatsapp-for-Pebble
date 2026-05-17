@@ -1,0 +1,55 @@
+{
+    "author": "oliben10@gmail.com",
+    "dependencies": {
+        "@rebble/clay": "^1.0.8"
+    },
+    "keywords": [],
+    "name": "whatsapp-for-pebble",
+    "pebble": {
+        "capabilities": [
+            "configurable"
+        ],
+        "displayName": "WhatsApp for Pebble",
+        "enableMultiJS": true,
+        "messageKeys": [
+            "CHAT_ID",
+            "MESSAGE_TEXT",
+            "DATA_TYPE",
+            "INDEX",
+            "CHAT_NAME",
+            "CHAT_PREVIEW",
+            "SENDER_NAME",
+            "TIMESTAMP",
+            "ServerURL",
+            "REPLY_1",
+            "REPLY_2",
+            "REPLY_3",
+            "REPLY_4",
+            "REPLY_5",
+            "REPLY_6",
+            "THEME_ME",
+            "THEME_OTHER",
+            "RECEIPT_STATUS",
+            "UNREAD_COUNT"
+        ],
+        "projectType": "native",
+        "resources": {
+            "media": []
+        },
+        "sdkVersion": "3",
+        "targetPlatforms": [
+            "aplite",
+            "basalt",
+            "chalk",
+            "diorite",
+            "emery",
+            "gabbro",
+            "flint"
+        ],
+        "uuid": "5821cb43-d7b6-412e-94ae-433c7cc5dcac",
+        "watchapp": {
+            "watchface": false
+        }
+    },
+    "version": "1.0.0"
+}
