@@ -122,6 +122,12 @@ module.exports = [
         "defaultValue": "Theme Colors"
       },
       {
+        "type": "toggle",
+        "messageKey": "DarkMode",
+        "label": "Enable Dark Mode",
+        "defaultValue": false
+      },
+      {
         "type": "color",
         "messageKey": "THEME_ME",
         "defaultValue": "00AA55",

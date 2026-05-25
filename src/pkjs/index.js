@@ -5,29 +5,41 @@ var clayConfig = require('./config');
 // Initialize Clay, but turn OFF auto-handling so we don't send the URL to the watch!
 var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
-var BASE_URL = 'http://127.0.0.1:3000'; // Default fallback
-var currentHistoryLimit = 10; // NEW: Track the pagination limit for reactions!
+var BASE_URL = 'http://192.168.0.30:3001'; // Default fallback
+var currentHistoryLimit = 10; // Track the pagination limit for reactions!
 
 Pebble.addEventListener('showConfiguration', function(e) {
-  Pebble.openURL(clay.generateUrl());
+  var url = clay.generateUrl();
+
+  // ---> THE STEAM DECK KIO FIX <---
+  // KDE Plasma / KIO cannot handle data: URIs, so we route the config
+  // page directly through your own local Node.js backend.
+  // We dynamically use whatever IP you saved in your settings!
+  var host = BASE_URL.replace(/^https?:\/\//, '');
+  url = url.replace(
+    'clay.pebble.com.s3-website-us-west-2.amazonaws.com/',
+    host + '/clay'
+  );
+
+  Pebble.openURL(url);
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
   if (e && !e.response) { return; }
-  
+
   var decodedResponse = decodeURIComponent(e.response);
   var configData = JSON.parse(decodedResponse);
-  
+
   var flatSettings = {};
   Object.keys(configData).forEach(function(key) {
     if (configData[key] && configData[key].value !== undefined) {
       flatSettings[key] = configData[key].value;
     }
   });
-  
+
   localStorage.setItem('clay-settings', JSON.stringify(flatSettings));
   console.log("Raw response from Clay: " + decodedResponse);
-  
+
   var needsRefetch = false;
 
   // --- 1. Handle Server URL ---
@@ -38,7 +50,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
     console.log("Settings updated! New BASE_URL is: " + BASE_URL);
     localStorage.setItem('ServerURL', BASE_URL);
   }
-  
+
   // --- 2. Handle Chat Limit ---
   var newChatLimit = configData['ChatLimit'];
   if (newChatLimit && newChatLimit.value !== undefined) {
@@ -53,7 +65,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
     console.log("New Message Limit is: " + newMsgLimit.value);
     localStorage.setItem('MessageLimit', newMsgLimit.value);
   }
-  
+
   // --- 4. Handle Filters ---
   var hideGroups = configData['HideGroupChats'];
   if (hideGroups !== undefined && hideGroups.value !== undefined) {
@@ -69,6 +81,14 @@ Pebble.addEventListener('webviewclosed', function(e) {
     localStorage.setItem('UnreadOnly', String(unreadOnly.value));
   }
 
+  // --- Handle Dark Mode ---
+  var isDark = configData['DarkMode'];
+  if (isDark !== undefined && isDark.value !== undefined) {
+    if (localStorage.getItem('DarkMode') !== String(isDark.value)) needsRefetch = true;
+    console.log("Dark Mode is: " + isDark.value);
+    localStorage.setItem('DarkMode', String(isDark.value));
+  }
+
   // --- 5. Handle Custom Replies ---
   var r1 = configData['Reply1'];
   var r2 = configData['Reply2'];
@@ -76,7 +96,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
   var r4 = configData['Reply4'];
   var r5 = configData['Reply5'];
   var r6 = configData['Reply6'];
-  
+
   if (r1 && r1.value !== undefined) localStorage.setItem('Reply1', r1.value);
   if (r2 && r2.value !== undefined) localStorage.setItem('Reply2', r2.value);
   if (r3 && r3.value !== undefined) localStorage.setItem('Reply3', r3.value);
@@ -87,15 +107,16 @@ Pebble.addEventListener('webviewclosed', function(e) {
   // --- NEW: Bulletproof Color Parser ---
   function parseColor(val, defaultHex) {
     if (val === undefined || val === null) return defaultHex;
-    if (typeof val === 'number') return val; 
+    if (typeof val === 'number') return val;
     if (typeof val === 'string') {
-      return parseInt(val.replace(/^#|0x/, ''), 16); 
+      return parseInt(val.replace(/^#|0x/, ''), 16);
     }
     return defaultHex;
   }
 
   // Package the replies and themes to send to the C code on the watch
   var replyDict = {
+    'DARK_MODE': localStorage.getItem('DarkMode') === 'true' ? 1 : 0,
     'THEME_ME': parseColor(configData['THEME_ME'] ? configData['THEME_ME'].value : null, 0x00AA55),
     'THEME_OTHER': parseColor(configData['THEME_OTHER'] ? configData['THEME_OTHER'].value : null, 0xAAAAAA),
     'REPLY_1': localStorage.getItem('Reply1') || 'Yes',
@@ -112,7 +133,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
   }, function(e) {
     console.log("Error sending replies to watch: " + JSON.stringify(e));
   });
-  
+
   if (needsRefetch && BASE_URL) {
     console.log("Network-dependent settings changed. Refetching chat list...");
     fetchChatList();
@@ -127,7 +148,7 @@ Pebble.addEventListener('ready', function(e) {
   if (savedURL) {
     BASE_URL = savedURL;
   }
-  
+
   console.log('PebbleKit JS is ready! Using URL: ' + BASE_URL);
   fetchChatList();
 });
@@ -139,22 +160,25 @@ Pebble.addEventListener('appmessage', function(e) {
   if (type === 0) {
     console.log("Watch requested chat list...");
     fetchChatList();
-    
+
   } else if (type === 1) {
     var chatId = dict['CHAT_ID'];
     console.log("Sending history for chat " + chatId);
-    currentHistoryLimit = parseInt(localStorage.getItem('MessageLimit')) || 10; // Reset limit on new chat
+
+    // ---> THE FIX: Reset the limit back to the user's default when opening a new chat! <---
+    currentHistoryLimit = parseInt(localStorage.getItem('MessageLimit')) || 10;
+
     fetchChatHistory(chatId);
-    
+
   } else if (type === 2) {
     console.log("User replied to chat " + dict['CHAT_ID'] + " with message: " + dict['MESSAGE_TEXT']);
     postReplyToBackend(dict['CHAT_ID'], dict['MESSAGE_TEXT']);
-    
+
   } else if (type === 3) { // PAGINATION
-    currentHistoryLimit += 10; 
+    currentHistoryLimit += 10;
     console.log("Pagination triggered! Fetching " + currentHistoryLimit + " messages for chat " + dict['CHAT_ID']);
     fetchChatHistory(dict['CHAT_ID']);
-    
+
   } else if (type === 4) { // REACTION
     console.log("User reacted to chat " + dict['CHAT_ID'] + " msg index " + dict['INDEX'] + " with: " + dict['MESSAGE_TEXT']);
     postReactionToBackend(dict['CHAT_ID'], dict['INDEX'], dict['MESSAGE_TEXT']);
@@ -164,15 +188,15 @@ Pebble.addEventListener('appmessage', function(e) {
 // --- HELPER: Queue AppMessages ---
 function sendMessages(messageArray) {
   function sendNext(index) {
-    if (index >= messageArray.length) return; 
-    
+    if (index >= messageArray.length) return;
+
     Pebble.sendAppMessage(messageArray[index], function() {
-      sendNext(index + 1); 
+      sendNext(index + 1);
     }, function(e) {
       console.log("Failed to send message: " + JSON.stringify(e));
     });
   }
-  sendNext(0); 
+  sendNext(0);
 }
 
 // --- API CALLS ---
@@ -180,37 +204,38 @@ function fetchChatList() {
   var chatLimit = localStorage.getItem('ChatLimit') || 8;
   var hideGroups = localStorage.getItem('HideGroupChats');
   var unreadOnly = localStorage.getItem('UnreadOnly');
-  
+
   var url = BASE_URL + '/api/chats?limit=' + chatLimit;
-  
+
   if (String(hideGroups) === 'true' || String(hideGroups) === '1') url += '&hideGroups=true';
   if (String(unreadOnly) === 'true' || String(unreadOnly) === '1') url += '&unreadOnly=true';
-  
+
   console.log(">>> Fetching Chat List from URL: " + url);
 
   var req = new XMLHttpRequest();
   req.open('GET', url, true);
   req.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
-  
+
   req.onload = function() {
     if (req.readyState === 4 && req.status === 200) {
       var response = JSON.parse(req.responseText);
       var chats = [];
-      
+
       if (response.length === 0) {
         chats.push({
-          'DATA_TYPE': 0, 
-          'INDEX': 0, 
-          'CHAT_NAME': "All caught up!", 
+          'DATA_TYPE': 0,
+          'INDEX': 0,
+          'CHAT_NAME': "All caught up!",
           'CHAT_PREVIEW': "No unread messages found."
         });
       } else {
         for (var i = 0; i < response.length; i++) {
           chats.push({
-            'DATA_TYPE': 0, 
-            'INDEX': i, 
-            'CHAT_NAME': response[i].name, 
-            'CHAT_PREVIEW': response[i].preview
+            'DATA_TYPE': 0,
+            'INDEX': i,
+            'CHAT_NAME': response[i].name,
+            'CHAT_PREVIEW': response[i].preview,
+            'UNREAD_COUNT': response[i].unreadCount || 0
           });
         }
       }
@@ -226,22 +251,47 @@ function fetchChatHistory(chatId) {
   var req = new XMLHttpRequest();
   req.open('GET', BASE_URL + '/api/chats/' + chatId + '/messages?limit=' + currentHistoryLimit, true);
   req.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
-  
+
   req.onload = function() {
     if (req.readyState === 4 && req.status === 200) {
       var response = JSON.parse(req.responseText);
       var history = [];
-      
-      for (var i = 0; i < response.length; i++) {
+
+      // Fallback if the chat is completely empty
+      if (response.length === 0) {
         history.push({
-          'DATA_TYPE': 1, 
-          'INDEX': i, 
-          'SENDER_NAME': response[i].sender, 
-          'TIMESTAMP': response[i].timestamp, 
-          'MESSAGE_TEXT': response[i].text,
-          'RECEIPT_STATUS': response[i].receipt || 0 
+          'DATA_TYPE': 1,
+          'INDEX': 0,
+          'SENDER_NAME': 'System',
+          'TIMESTAMP': '',
+          'MESSAGE_TEXT': 'No messages yet.',
+          'RECEIPT_STATUS': 0
         });
+      } else {
+        // Queue all the real messages
+        for (var i = 0; i < response.length; i++) {
+
+          var msgPayload = {
+            'DATA_TYPE': 1,
+            'INDEX': i,
+            'SENDER_NAME': response[i].sender,
+            'TIMESTAMP': response[i].timestamp,
+            'MESSAGE_TEXT': response[i].text,
+            'RECEIPT_STATUS': response[i].receipt || 0
+          };
+
+          // ---> OPTION B: Send the reaction as a separate, dedicated variable! <---
+          if (response[i].reaction && response[i].reaction.length > 0) {
+            msgPayload[10005] = response[i].reaction; // 10005 is our secret reaction key
+          }
+
+          history.push(msgPayload);
+        }
       }
+
+      // Send the "End of History" signal so the watch jumps instantly
+      history.push({ 'DATA_TYPE': 5 });
+
       sendMessages(history);
     }
   };
@@ -253,7 +303,7 @@ function postReplyToBackend(chatId, messageText) {
   req.open('POST', BASE_URL + '/api/chats/' + chatId + '/messages', true);
   req.setRequestHeader('Content-Type', 'application/json');
   req.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
-  
+
   req.onload = function() {
     console.log("Message successfully delivered to WhatsApp bridge!");
   };
@@ -265,7 +315,7 @@ function postReactionToBackend(chatId, msgIndex, reactionText) {
   req.open('POST', BASE_URL + '/api/chats/' + chatId + '/react', true);
   req.setRequestHeader('Content-Type', 'application/json');
   req.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
-  
+
   req.onload = function() {
     if (req.readyState === 4 && req.status === 200) {
       console.log("Reaction successfully delivered to WhatsApp bridge!");
@@ -273,11 +323,10 @@ function postReactionToBackend(chatId, msgIndex, reactionText) {
       console.log("Error delivering reaction: " + req.status);
     }
   };
-  
-  // Pass currentHistoryLimit so the backend perfectly matches the exact message array!
-  req.send(JSON.stringify({ 
-    msgIndex: msgIndex, 
-    limit: currentHistoryLimit, 
-    reaction: reactionText 
+
+  req.send(JSON.stringify({
+    msgIndex: msgIndex,
+    limit: currentHistoryLimit,
+    reaction: reactionText
   }));
 }

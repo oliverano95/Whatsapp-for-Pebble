@@ -23,7 +23,10 @@ static int s_num_chats = 0;
 static char *s_mock_messages[MAX_MESSAGES];
 static char *s_mock_senders[MAX_MESSAGES];
 static char *s_mock_timestamps[MAX_MESSAGES]; 
+#define MESSAGE_KEY_REACTION 10005
+static char *s_mock_reactions[MAX_MESSAGES];
 static int s_mock_receipts[MAX_MESSAGES]; 
+static bool s_is_dark_mode = false;
 static int s_num_messages = 0;
 static bool s_auto_scroll_to_bottom = true; // NEW: Track if we should snap to bottom!
 
@@ -130,7 +133,8 @@ static void free_chat_history() {
     if(s_mock_messages[i]) { free(s_mock_messages[i]); s_mock_messages[i] = NULL; }
     if(s_mock_senders[i]) { free(s_mock_senders[i]); s_mock_senders[i] = NULL; }
     if(s_mock_timestamps[i]) { free(s_mock_timestamps[i]); s_mock_timestamps[i] = NULL; }
-    s_mock_receipts[i] = 0; 
+    s_mock_receipts[i] = 0;
+    if(s_mock_reactions[i]) { free(s_mock_reactions[i]); s_mock_reactions[i] = NULL; }
   }
   s_num_messages = 0;
 }
@@ -173,6 +177,33 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   if (reply6_tuple) {
     snprintf(reply_6_buffer, sizeof(reply_6_buffer), "%s", reply6_tuple->value->cstring);
     persist_write_string(MESSAGE_KEY_REPLY_6, reply_6_buffer);
+  }
+
+  Tuple *dark_tuple = dict_find(iterator, MESSAGE_KEY_DARK_MODE);
+  if (dark_tuple) {
+    s_is_dark_mode = (dark_tuple->value->int32 == 1);
+    persist_write_bool(MESSAGE_KEY_DARK_MODE, s_is_dark_mode);
+
+    // Force the UI to repaint immediately!
+    if (s_main_window) {
+      window_set_background_color(s_main_window, s_is_dark_mode ? GColorBlack : GColorWhite);
+    }
+    if (s_main_header_layer) {
+      #ifdef PBL_COLOR
+      text_layer_set_background_color(s_main_header_layer, s_is_dark_mode ? GColorDarkGray : (GColor){.argb = 0x40});
+      text_layer_set_text_color(s_main_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
+      #else
+      text_layer_set_background_color(s_main_header_layer, s_is_dark_mode ? GColorBlack : GColorLightGray);
+      text_layer_set_text_color(s_main_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
+      #endif
+    }
+    if (s_menu_layer) {
+      #ifdef PBL_COLOR
+      menu_layer_set_normal_colors(s_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+      menu_layer_set_highlight_colors(s_menu_layer, s_is_dark_mode ? GColorDarkGreen : GColorMintGreen, s_is_dark_mode ? GColorWhite : GColorBlack);
+      #endif
+      menu_layer_reload_data(s_menu_layer);
+    }
   }
 
   #ifdef PBL_COLOR
@@ -221,38 +252,48 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
        s_num_chats = index + 1;
        if(s_menu_layer) menu_layer_reload_data(s_menu_layer);
     }
-  } else if(type == 1) { 
+  } else if(type == 1) {
     if(index == 0) free_chat_history();
 
     Tuple *sender_t = dict_find(iterator, MESSAGE_KEY_SENDER_NAME);
     Tuple *msg_t = dict_find(iterator, MESSAGE_KEY_MESSAGE_TEXT);
     Tuple *ts_t = dict_find(iterator, MESSAGE_KEY_TIMESTAMP);
-    Tuple *receipt_t = dict_find(iterator, MESSAGE_KEY_RECEIPT_STATUS); 
+    Tuple *receipt_t = dict_find(iterator, MESSAGE_KEY_RECEIPT_STATUS);
 
     if(sender_t && msg_t && index < MAX_MESSAGES) {
-       s_mock_senders[index] = malloc(strlen(sender_t->value->cstring) + 1);
-       strcpy(s_mock_senders[index], sender_t->value->cstring);
+      s_mock_senders[index] = malloc(strlen(sender_t->value->cstring) + 1);
+      strcpy(s_mock_senders[index], sender_t->value->cstring);
 
-       s_mock_messages[index] = malloc(strlen(msg_t->value->cstring) + 1);
-       strcpy(s_mock_messages[index], msg_t->value->cstring);
-       
-       char *time_str = ts_t ? ts_t->value->cstring : "12:00";
-       s_mock_timestamps[index] = malloc(strlen(time_str) + 1);
-       strcpy(s_mock_timestamps[index], time_str);
-       
-       s_mock_receipts[index] = receipt_t ? receipt_t->value->int32 : 0;
+      s_mock_messages[index] = malloc(strlen(msg_t->value->cstring) + 1);
+      strcpy(s_mock_messages[index], msg_t->value->cstring);
 
-       s_num_messages = index + 1;
-       
-       if(s_history_menu_layer) {
-         menu_layer_reload_data(s_history_menu_layer);
-         
-         // NEW: Only auto-scroll to the bottom if this is an initial load or a new sent message!
-         if (s_auto_scroll_to_bottom) {
-           MenuIndex last_idx = get_menu_index_from_msg_idx(s_num_messages - 1);
-           menu_layer_set_selected_index(s_history_menu_layer, last_idx, MenuRowAlignBottom, false);
-         }
-       }
+      char *time_str = ts_t ? ts_t->value->cstring : "12:00";
+      s_mock_timestamps[index] = malloc(strlen(time_str) + 1);
+      strcpy(s_mock_timestamps[index], time_str);
+
+      s_mock_receipts[index] = receipt_t ? receipt_t->value->int32 : 0;
+
+      Tuple *reaction_t = dict_find(iterator, MESSAGE_KEY_REACTION);
+      if (reaction_t && strlen(reaction_t->value->cstring) > 0) {
+        s_mock_reactions[index] = malloc(strlen(reaction_t->value->cstring) + 1);
+        strcpy(s_mock_reactions[index], reaction_t->value->cstring);
+      } else {
+        s_mock_reactions[index] = NULL;
+      }
+
+      s_num_messages = index + 1;
+
+      if(s_history_menu_layer) {
+        menu_layer_reload_data(s_history_menu_layer);
+        // REMOVED: We no longer scroll down here to prevent the "cascading" animation!
+      }
+    }
+  } else if (type == 5) {
+    // --- NEW: END OF HISTORY MARKER ---
+    // Now we instantly snap to the bottom ONLY when all messages have finished loading!
+    if(s_history_menu_layer && s_auto_scroll_to_bottom && s_num_messages > 0) {
+      MenuIndex last_idx = get_menu_index_from_msg_idx(s_num_messages - 1);
+      menu_layer_set_selected_index(s_history_menu_layer, last_idx, MenuRowAlignBottom, false);
     }
   }
 }
@@ -373,7 +414,7 @@ static void reaction_select_callback(MenuLayer *menu_layer, MenuIndex *cell_inde
 }
 
 static void reaction_window_load(Window *window) {
-  window_set_background_color(window, GColorWhite); 
+  window_set_background_color(window, s_is_dark_mode ? GColorBlack : GColorWhite);
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_unobstructed_bounds(window_layer);
 
@@ -399,11 +440,11 @@ static void reaction_window_load(Window *window) {
   s_reaction_menu_layer = menu_layer_create(menu_bounds);
 
   #ifdef PBL_COLOR
-  menu_layer_set_normal_colors(s_reaction_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_reaction_menu_layer, GColorMintGreen, GColorBlack);
+  menu_layer_set_normal_colors(s_reaction_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_reaction_menu_layer, s_is_dark_mode ? GColorDarkGreen : GColorMintGreen, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-  menu_layer_set_normal_colors(s_reaction_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_reaction_menu_layer, GColorBlack, GColorWhite);
+  menu_layer_set_normal_colors(s_reaction_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_reaction_menu_layer, s_is_dark_mode ? GColorWhite : GColorBlack, s_is_dark_mode ? GColorBlack : GColorWhite);
   #endif
 
   menu_layer_set_callbacks(s_reaction_menu_layer, NULL, (MenuLayerCallbacks){
@@ -483,7 +524,7 @@ static void canned_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index,
 }
 
 static void canned_window_load(Window *window) {
-  window_set_background_color(window, GColorWhite); // Clean white canvas
+  window_set_background_color(window, s_is_dark_mode ? GColorBlack : GColorWhite);
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_unobstructed_bounds(window_layer);
 
@@ -515,11 +556,11 @@ static void canned_window_load(Window *window) {
 
   // Apply the Mint Green highlight
   #ifdef PBL_COLOR
-  menu_layer_set_normal_colors(s_canned_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_canned_menu_layer, GColorMintGreen, GColorBlack);
+  menu_layer_set_normal_colors(s_canned_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_canned_menu_layer, s_is_dark_mode ? GColorDarkGreen : GColorMintGreen, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-  menu_layer_set_normal_colors(s_canned_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_canned_menu_layer, GColorBlack, GColorWhite);
+  menu_layer_set_normal_colors(s_canned_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_canned_menu_layer, s_is_dark_mode ? GColorWhite : GColorBlack, s_is_dark_mode ? GColorBlack : GColorWhite);
   #endif
 
   menu_layer_set_callbacks(s_canned_menu_layer, NULL, (MenuLayerCallbacks){
@@ -604,13 +645,13 @@ static int16_t history_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex
   if (s_num_messages == 0) return 32;
 
   // Give the Load More button a nice, touchable height
-  if (cell_index->section == 0) return 44; 
+  if (cell_index->section == 0) return 44;
 
   int real_section = cell_index->section - 1;
   int msg_idx = get_message_index(real_section, cell_index->row);
   GRect bounds = layer_get_bounds(menu_layer_get_layer(menu_layer));
-  
-  int max_text_width = bounds.size.w - 32; 
+
+  int max_text_width = bounds.size.w - 32;
   GRect max_text_bounds = GRect(0, 0, max_text_width, 2000);
 
   GSize text_size = graphics_text_layout_get_content_size(
@@ -621,7 +662,13 @@ static int16_t history_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex
     GTextAlignmentLeft
   );
 
-  int16_t calculated_height = text_size.h + 12 + 16 + 8;
+  // ---> THE FIX: Add extra height if this message has a reaction! <---
+  bool has_reaction = (s_mock_reactions[msg_idx] != NULL);
+  int reaction_padding = has_reaction ? 10 : 0;
+
+  // Add the reaction padding to the total calculated height of the row
+  int16_t calculated_height = text_size.h + 12 + 16 + 4 + reaction_padding;
+
   return (calculated_height > 44) ? calculated_height : 44;
 }
 
@@ -637,24 +684,33 @@ static void history_draw_header_callback(GContext* ctx, const Layer *cell_layer,
 
   GRect bounds = layer_get_bounds(cell_layer);
 
-  #ifdef PBL_COLOR
-  graphics_context_set_fill_color(ctx, (GColor){.argb = 0x40});
-  #else
-  graphics_context_set_fill_color(ctx, GColorLightGray);
-  #endif
+  graphics_context_set_fill_color(ctx, s_is_dark_mode ? GColorBlack : GColorWhite);
+  graphics_context_set_text_color(ctx, s_is_dark_mode ? GColorWhite : GColorBlack);
+
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-  graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, s_mock_senders[msg_idx],
                      fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                      grect_inset(bounds, GEdgeInsets(2, 4, 2, 4)), 
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
+// Helper to convert the safe Bluetooth string back to a hardcoded C emoji
+static char* get_emoji_for_reaction(const char* safe_text) {
+  if (!safe_text) return "";
+  if (strstr(safe_text, "Like")) return "👍";
+  if (strstr(safe_text, "Love")) return "❤️";
+  if (strstr(safe_text, "Haha")) return "😂";
+  if (strstr(safe_text, "Wow")) return "😮";
+  if (strstr(safe_text, "Sad")) return "😢";
+  if (strstr(safe_text, "Pray")) return "🙏";
+  return "✨";
+}
+
 static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   GRect bounds = layer_get_bounds(cell_layer);
 
-  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_context_set_fill_color(ctx, s_is_dark_mode ? GColorBlack : GColorWhite);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
   if (s_num_messages == 0) {
@@ -665,24 +721,22 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
 
   // --- NEW: DRAW THE LOAD MORE BUTTON ---
   if (cell_index->section == 0) {
-    #ifdef PBL_COLOR
-    graphics_context_set_fill_color(ctx, GColorLightGray);
-    #else
     bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
-    graphics_context_set_fill_color(ctx, highlighted ? GColorBlack : GColorLightGray);
-    #endif
-    
-    // Draw a nice rounded pill button
-    graphics_fill_rect(ctx, grect_inset(bounds, GEdgeInsets(6, 16, 6, 16)), 16, GCornersAll);
-    
+
     #ifdef PBL_COLOR
+    // Use Mint Green when selected to match the main menu, otherwise Light Gray
+    graphics_context_set_fill_color(ctx, highlighted ? GColorMintGreen : GColorLightGray);
     graphics_context_set_text_color(ctx, GColorBlack);
     #else
+    graphics_context_set_fill_color(ctx, highlighted ? GColorBlack : GColorLightGray);
     graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
     #endif
-    
-    graphics_draw_text(ctx, "Load older messages...", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), 
-                       GRect(0, 12, bounds.size.w, 20), 
+
+    // Draw a nice rounded pill button
+    graphics_fill_rect(ctx, grect_inset(bounds, GEdgeInsets(6, 16, 6, 16)), 16, GCornersAll);
+
+    graphics_draw_text(ctx, "Load older messages...", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(0, 12, bounds.size.w, 20),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     return;
   }
@@ -696,7 +750,7 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
 
   // Bubble Layout Configuration
   int margin_x = 4;
-  int margin_y = 4;
+  int margin_y = 2;
   int padding_x = 8;
   int padding_y = 6;
   int timestamp_h = 16;
@@ -710,6 +764,9 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
     GTextOverflowModeWordWrap,
     GTextAlignmentLeft
   );
+
+  bool has_reaction = (s_mock_reactions[msg_idx] != NULL);
+  int reaction_padding = has_reaction ? 10 : 0;
 
   int bubble_w = text_size.w + (padding_x * 2);
   if (bubble_w < 60) bubble_w = 60; 
@@ -751,6 +808,31 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
   // 5. Draw Bubble
   graphics_context_set_fill_color(ctx, bubble_color);
   graphics_fill_rect(ctx, bubble_rect, 8, GCornersAll);
+
+  // ---> NEW: DRAW THE MESSAGE TAIL! <---
+  // Only draw the tail if this is the FIRST message in a sequence from the same sender
+  if (cell_index->row == 0) {
+    graphics_context_set_stroke_color(ctx, bubble_color);
+
+    int tail_h = 10; // Height of the tail
+    int tail_w = 4; // How far it sticks out
+
+    if (is_me) {
+      // Draw the tail on the top-right corner, pointing right
+      int start_x = bubble_x + bubble_w - 6; // Start slightly inside to prevent gaps
+      for (int i = 0; i < tail_h; i++) {
+        int end_x = bubble_x + bubble_w + tail_w - i;
+        graphics_draw_line(ctx, GPoint(start_x, bubble_y + i), GPoint(end_x, bubble_y + i));
+      }
+    } else {
+      // Draw the tail on the top-left corner, pointing left
+      int start_x = bubble_x + 6; // Start slightly inside
+      for (int i = 0; i < tail_h; i++) {
+        int end_x = bubble_x - tail_w + i;
+        graphics_draw_line(ctx, GPoint(end_x, bubble_y + i), GPoint(start_x, bubble_y + i));
+      }
+    }
+  }
 
   #ifndef PBL_COLOR
     if (!highlighted && is_me) {
@@ -798,6 +880,47 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
       graphics_draw_line(ctx, GPoint(cx2, cy), GPoint(cx2 + 2, cy + 3));
       graphics_draw_line(ctx, GPoint(cx2 + 2, cy + 3), GPoint(cx2 + 6, cy - 3));
     }
+  }
+
+  // ---> 9. DRAW THE SEPARATE REACTION BADGE! <---
+  if (has_reaction) {
+    // Translate the safe Bluetooth string back into a pixel-art emoji!
+    char* display_emoji = get_emoji_for_reaction(s_mock_reactions[msg_idx]);
+
+    // Position it at the bottom-RIGHT corner of the message bubble
+    int rw = 28;
+    int rh = 18;
+    int rx = bubble_x + bubble_w - rw + 4;
+    int ry = bubble_rect.origin.y + bubble_rect.size.h - 8;
+
+    GRect reaction_rect = GRect(rx, ry, rw, rh);
+
+    // 1. Draw the badge background (Solid Fill with Easter Egg!)
+    #ifdef PBL_COLOR
+    if (strcmp(display_emoji, "❤️") == 0) {
+      graphics_context_set_fill_color(ctx, GColorMelon); // Soft red for the heart!
+    } else {
+      graphics_context_set_fill_color(ctx, GColorPastelYellow); // Yellow for smileys!
+    }
+    #else
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    #endif
+    graphics_fill_rect(ctx, reaction_rect, 9, GCornersAll);
+
+    // 2. Draw a subtle outline
+    #ifdef PBL_COLOR
+    graphics_context_set_stroke_color(ctx, GColorDarkGray);
+    #else
+    graphics_context_set_stroke_color(ctx, GColorBlack);
+    #endif
+    graphics_draw_round_rect(ctx, reaction_rect, 9);
+
+    // 3. Draw the emoji lines in crisp black!
+    graphics_context_set_text_color(ctx, GColorBlack);
+    graphics_draw_text(ctx, display_emoji,
+                       fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                       GRect(rx, ry - 7, rw, rh + 7),
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
   }
 }
 
@@ -850,7 +973,7 @@ static void history_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_
 }
 
 static void history_window_load(Window *window) {
-  window_set_background_color(window, GColorWhite);
+  window_set_background_color(window, s_is_dark_mode ? GColorBlack : GColorWhite);
 
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_unobstructed_bounds(window_layer);
@@ -865,12 +988,11 @@ static void history_window_load(Window *window) {
 
   // --- THE NIFTY TRICK: Super Light Gray ---
   #ifdef PBL_COLOR
-  // 0x40 is an Alpha 1 (33% opacity) Black. On a white window, this hardware-dithers into a gorgeous super-light gray!
-  text_layer_set_background_color(s_history_header_layer, (GColor){.argb = 0x40});
-  text_layer_set_text_color(s_history_header_layer, GColorBlack);
+  text_layer_set_background_color(s_history_header_layer, s_is_dark_mode ? GColorDarkGray : (GColor){.argb = 0x40});
+  text_layer_set_text_color(s_history_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-  text_layer_set_background_color(s_history_header_layer, GColorLightGray);
-  text_layer_set_text_color(s_history_header_layer, GColorBlack);
+  text_layer_set_background_color(s_history_header_layer, s_is_dark_mode ? GColorBlack : GColorLightGray);
+  text_layer_set_text_color(s_history_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
   #endif
 
   layer_add_child(window_layer, text_layer_get_layer(s_history_header_layer));
@@ -878,8 +1000,8 @@ static void history_window_load(Window *window) {
   GRect menu_bounds = GRect(0, 24, bounds.size.w, bounds.size.h - 24);
   s_history_menu_layer = menu_layer_create(menu_bounds);
   
-  menu_layer_set_normal_colors(s_history_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_history_menu_layer, GColorWhite, GColorBlack);
+  menu_layer_set_normal_colors(s_history_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_history_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
 
   menu_layer_set_callbacks(s_history_menu_layer, NULL, (MenuLayerCallbacks){
     .get_num_sections = history_get_num_sections_callback,
@@ -957,13 +1079,13 @@ static void menu_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
   // --- MODERN CUSTOM DRAWN CHAT ROWS ---
   GColor title_color;
   GColor preview_color;
-  
+
   #ifdef PBL_COLOR
-    title_color = GColorBlack; // Always crisp against white or mint green
-    preview_color = GColorDarkGray; 
+  title_color = s_is_dark_mode ? GColorWhite : GColorBlack;
+  preview_color = s_is_dark_mode ? GColorLightGray : GColorDarkGray;
   #else
-    title_color = highlighted ? GColorWhite : GColorBlack;
-    preview_color = highlighted ? GColorWhite : GColorBlack;
+  title_color = highlighted ? GColorWhite : (s_is_dark_mode ? GColorWhite : GColorBlack);
+  preview_color = highlighted ? GColorWhite : (s_is_dark_mode ? GColorLightGray : GColorBlack);
   #endif
 
   // --- NEW: UNREAD BADGE LOGIC ---
@@ -1042,7 +1164,7 @@ static void menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
 
 // --- WINDOW LIFECYCLE ---
 static void main_window_load(Window *window) {
-  window_set_background_color(window, GColorWhite); // Ensure a clean white canvas
+  window_set_background_color(window, s_is_dark_mode ? GColorBlack : GColorWhite);
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_unobstructed_bounds(window_layer);
 
@@ -1072,8 +1194,8 @@ static void main_window_load(Window *window) {
   
   // --- NEW: Softer Mint Green Highlight! ---
   #ifdef PBL_COLOR
-  menu_layer_set_normal_colors(s_menu_layer, GColorWhite, GColorBlack);
-  menu_layer_set_highlight_colors(s_menu_layer, GColorMintGreen, GColorBlack);
+  menu_layer_set_normal_colors(s_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_menu_layer, s_is_dark_mode ? GColorDarkGreen : GColorMintGreen, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
   menu_layer_set_normal_colors(s_menu_layer, GColorWhite, GColorBlack);
   menu_layer_set_highlight_colors(s_menu_layer, GColorBlack, GColorWhite);
@@ -1128,6 +1250,9 @@ static void init() {
   }
   if (persist_exists(MESSAGE_KEY_REPLY_6)) {
     persist_read_string(MESSAGE_KEY_REPLY_6, reply_6_buffer, sizeof(reply_6_buffer));
+  }
+  if (persist_exists(MESSAGE_KEY_DARK_MODE)) {
+    s_is_dark_mode = persist_read_bool(MESSAGE_KEY_DARK_MODE);
   }
 
   // Load custom Theme Colors!

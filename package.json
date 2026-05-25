@@ -30,7 +30,8 @@
             "THEME_ME",
             "THEME_OTHER",
             "RECEIPT_STATUS",
-            "UNREAD_COUNT"
+            "UNREAD_COUNT",
+            "DARK_MODE"
         ],
         "projectType": "native",
         "resources": {
