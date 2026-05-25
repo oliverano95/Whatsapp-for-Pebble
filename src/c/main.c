@@ -392,16 +392,19 @@ static int16_t reaction_get_cell_height_callback(MenuLayer *menu_layer, MenuInde
 static void reaction_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   GRect bounds = layer_get_bounds(cell_layer);
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
-  (void)highlighted; // FIX: Silence unused variable warning on Color watches
   
-  GColor text_color;
+  // ---> THE FIX: Smart text contrast for both Color and B&W watches! <---
   #ifdef PBL_COLOR
-    text_color = GColorBlack; 
+    // On Color watches, Mint Green (Light) needs Black text, Dark Green (Dark) needs White text.
+    graphics_context_set_text_color(ctx, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-    text_color = highlighted ? GColorWhite : GColorBlack;
+    // On B&W watches, highlighting physically inverts the screen colors, so we flip the text.
+    if (s_is_dark_mode) {
+      graphics_context_set_text_color(ctx, highlighted ? GColorBlack : GColorWhite);
+    } else {
+      graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
+    }
   #endif
-
-  graphics_context_set_text_color(ctx, text_color);
   
   graphics_draw_text(ctx, s_reaction_labels[cell_index->row], fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
                      GRect(8, 4, bounds.size.w - 16, 28), 
@@ -427,11 +430,11 @@ static void reaction_window_load(Window *window) {
   text_layer_set_overflow_mode(s_reaction_header_layer, GTextOverflowModeTrailingEllipsis);
 
   #ifdef PBL_COLOR
-  text_layer_set_background_color(s_reaction_header_layer, (GColor){.argb = 0x40});
-  text_layer_set_text_color(s_reaction_header_layer, GColorBlack);
+  text_layer_set_background_color(s_reaction_header_layer, s_is_dark_mode ? GColorDarkGray : (GColor){.argb = 0x40});
+  text_layer_set_text_color(s_reaction_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-  text_layer_set_background_color(s_reaction_header_layer, GColorLightGray);
-  text_layer_set_text_color(s_reaction_header_layer, GColorBlack);
+  text_layer_set_background_color(s_reaction_header_layer, s_is_dark_mode ? GColorBlack : GColorLightGray);
+  text_layer_set_text_color(s_reaction_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
   #endif
 
   layer_add_child(window_layer, text_layer_get_layer(s_reaction_header_layer));
@@ -480,16 +483,19 @@ static int16_t canned_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex 
 static void canned_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   GRect bounds = layer_get_bounds(cell_layer);
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
-  (void)highlighted; // FIX: Silence unused variable warning on Color watches
   
-  GColor text_color;
+  // ---> THE FIX: Smart text contrast for both Color and B&W watches! <---
   #ifdef PBL_COLOR
-    text_color = GColorBlack; // Crisp dark text on white or mint green
+    // On Color watches, Mint Green (Light) needs Black text, Dark Green (Dark) needs White text.
+    graphics_context_set_text_color(ctx, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-    text_color = highlighted ? GColorWhite : GColorBlack;
+    // On B&W watches, highlighting physically inverts the screen colors, so we flip the text.
+    if (s_is_dark_mode) {
+      graphics_context_set_text_color(ctx, highlighted ? GColorBlack : GColorWhite);
+    } else {
+      graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
+    }
   #endif
-
-  graphics_context_set_text_color(ctx, text_color);
   
   char *text = NULL;
   #ifdef PBL_MICROPHONE
@@ -541,11 +547,11 @@ static void canned_window_load(Window *window) {
 
   // Same Nifty Trick for super light gray background
   #ifdef PBL_COLOR
-  text_layer_set_background_color(s_canned_header_layer, (GColor){.argb = 0x40});
-  text_layer_set_text_color(s_canned_header_layer, GColorBlack);
+  text_layer_set_background_color(s_canned_header_layer, s_is_dark_mode ? GColorDarkGray : (GColor){.argb = 0x40});
+  text_layer_set_text_color(s_canned_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
   #else
-  text_layer_set_background_color(s_canned_header_layer, GColorLightGray);
-  text_layer_set_text_color(s_canned_header_layer, GColorBlack);
+  text_layer_set_background_color(s_canned_header_layer, s_is_dark_mode ? GColorBlack : GColorLightGray);
+  text_layer_set_text_color(s_canned_header_layer, s_is_dark_mode ? GColorWhite : GColorBlack);
   #endif
 
   layer_add_child(window_layer, text_layer_get_layer(s_canned_header_layer));
