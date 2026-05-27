@@ -31,7 +31,8 @@
             "THEME_OTHER",
             "RECEIPT_STATUS",
             "UNREAD_COUNT",
-            "DARK_MODE"
+            "DARK_MODE",
+            "REACTION"
         ],
         "projectType": "native",
         "resources": {
@@ -39,13 +40,7 @@
         },
         "sdkVersion": "3",
         "targetPlatforms": [
-            "aplite",
-            "basalt",
-            "chalk",
-            "diorite",
-            "emery",
-            "gabbro",
-            "flint"
+            "emery"
         ],
         "uuid": "5821cb43-d7b6-412e-94ae-433c7cc5dcac",
         "watchapp": {
