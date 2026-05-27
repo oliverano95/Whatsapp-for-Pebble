@@ -171,8 +171,22 @@ Pebble.addEventListener('appmessage', function(e) {
     fetchChatHistory(chatId);
 
   } else if (type === 2) {
-    console.log("User replied to chat " + dict['CHAT_ID'] + " with message: " + dict['MESSAGE_TEXT']);
-    postReplyToBackend(dict['CHAT_ID'], dict['MESSAGE_TEXT']);
+    var replyIndex = dict['INDEX'] !== undefined ? dict['INDEX'] : -1;
+
+    // Save the limit exactly as it was when the user clicked "Reply"
+    var limitWhenReplied = currentHistoryLimit;
+
+    if (replyIndex !== -1) {
+      console.log("User QUOTE replied to chat " + dict['CHAT_ID'] + " msg index " + replyIndex + " with: " + dict['MESSAGE_TEXT']);
+    } else {
+      console.log("User sent normal reply to chat " + dict['CHAT_ID'] + " with message: " + dict['MESSAGE_TEXT']);
+    }
+
+    // ---> THE FIX: Increment the limit tracking to account for the new message! <---
+    currentHistoryLimit++;
+
+    // Pass all the data to the backend function
+    postReplyToBackend(dict['CHAT_ID'], dict['MESSAGE_TEXT'], replyIndex, limitWhenReplied);
 
   } else if (type === 3) { // PAGINATION
     currentHistoryLimit += 10;
@@ -182,6 +196,11 @@ Pebble.addEventListener('appmessage', function(e) {
   } else if (type === 4) { // REACTION
     console.log("User reacted to chat " + dict['CHAT_ID'] + " msg index " + dict['INDEX'] + " with: " + dict['MESSAGE_TEXT']);
     postReactionToBackend(dict['CHAT_ID'], dict['INDEX'], dict['MESSAGE_TEXT']);
+
+    // ---> THE FIX: Catch the Delete command! <---
+  } else if (type === 6) { // DELETE
+    console.log("User requested to delete msg index " + dict['INDEX'] + " in chat " + dict['CHAT_ID']);
+    deleteMessageInBackend(dict['CHAT_ID'], dict['INDEX']);
   }
 });
 
@@ -298,16 +317,56 @@ function fetchChatHistory(chatId) {
   req.send(null);
 }
 
-function postReplyToBackend(chatId, messageText) {
+// ---> THE FIX: Accept the original limit and trigger a history refresh on success! <---
+function postReplyToBackend(chatId, messageText, msgIndex, originalLimit) {
   var req = new XMLHttpRequest();
   req.open('POST', BASE_URL + '/api/chats/' + chatId + '/messages', true);
   req.setRequestHeader('Content-Type', 'application/json');
   req.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
 
   req.onload = function() {
-    console.log("Message successfully delivered to WhatsApp bridge!");
+    if (req.readyState === 4 && req.status === 200) {
+      console.log("Message successfully delivered to WhatsApp bridge!");
+
+      // ---> FORCE SYNC: Fetch the real history so the watch replaces its optimistic UI! <---
+      fetchChatHistory(chatId);
+    } else {
+      console.log("Error delivering message: " + req.status);
+    }
   };
-  req.send(JSON.stringify({ text: messageText }));
+
+  var payload = {
+    text: messageText
+  };
+
+  if (msgIndex !== undefined && msgIndex !== -1) {
+    payload.msgIndex = msgIndex;
+    payload.limit = originalLimit; // Use the old limit so the backend math lines up perfectly!
+  }
+
+  req.send(JSON.stringify(payload));
+}
+
+function deleteMessageInBackend(chatId, msgIndex) {
+  var req = new XMLHttpRequest();
+  req.open('POST', BASE_URL + '/api/chats/' + chatId + '/delete', true);
+  req.setRequestHeader('Content-Type', 'application/json');
+  req.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
+
+  req.onload = function() {
+    if (req.readyState === 4 && req.status === 200) {
+      console.log("Delete command successfully delivered to WhatsApp bridge!");
+      // Force the watch to instantly reload the chat history so the deleted bubble updates!
+      fetchChatHistory(chatId);
+    } else {
+      console.log("Error deleting message: " + req.status);
+    }
+  };
+
+  req.send(JSON.stringify({
+    msgIndex: msgIndex,
+    limit: currentHistoryLimit
+  }));
 }
 
 function postReactionToBackend(chatId, msgIndex, reactionText) {

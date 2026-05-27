@@ -1,8 +1,8 @@
 #include <pebble.h>
 
 // UI Elements
-static Window *s_main_window;
-static MenuLayer *s_menu_layer;
+static Window *s_main_window, *s_action_window;
+static MenuLayer *s_menu_layer, *s_action_menu_layer;
 static TextLayer *s_main_header_layer; // NEW: Persistent top header for main menu!
 
 // Dictation Elements
@@ -22,10 +22,10 @@ static int s_num_chats = 0;
 #define MAX_MESSAGES 40 // INCREASED: Allow up to 40 messages via pagination!
 static char *s_mock_messages[MAX_MESSAGES];
 static char *s_mock_senders[MAX_MESSAGES];
-static char *s_mock_timestamps[MAX_MESSAGES]; 
+static char *s_mock_timestamps[MAX_MESSAGES];
 #define MESSAGE_KEY_REACTION 10005
 static char *s_mock_reactions[MAX_MESSAGES];
-static int s_mock_receipts[MAX_MESSAGES]; 
+static int s_mock_receipts[MAX_MESSAGES];
 static bool s_is_dark_mode = false;
 static int s_num_messages = 0;
 static bool s_auto_scroll_to_bottom = true; // NEW: Track if we should snap to bottom!
@@ -48,7 +48,7 @@ static Window *s_canned_window;
 static MenuLayer *s_canned_menu_layer;
 static TextLayer *s_canned_header_layer; // NEW: Header for replies
 static char s_reply_header_buffer[64];   // NEW: Buffer for "Reply to X" text
-#define NUM_CANNED 6 
+#define NUM_CANNED 6
 // --- 2. POINT THE MENU TO THE BUFFERS ---
 static char *s_canned_messages[] = {reply_1_buffer, reply_2_buffer, reply_3_buffer, reply_4_buffer, reply_5_buffer, reply_6_buffer};
 static int s_selected_chat_id = 0;
@@ -70,6 +70,15 @@ static char *s_reaction_values[] = {"0", "1", "2", "3", "4", "5"};
 static Window *s_history_window;
 static MenuLayer *s_history_menu_layer;
 static TextLayer *s_history_header_layer; 
+
+// State tracking for the currently selected message
+static int s_action_msg_idx = -1;
+static bool s_action_msg_is_me = false;
+
+// --- FORWARD DECLARATIONS ---
+static void reaction_window_push(void);
+static void canned_window_push(void);
+static void action_window_push(void);
 
 // --- TUPLE EXTRACTION HELPER ---
 static uint32_t tuple_get_uint32(Tuple *t) {
@@ -141,7 +150,7 @@ static void free_chat_history() {
 
 // --- APPMESSAGE CALLBACKS ---
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
-  
+
   // --- 3. CATCH CUSTOM REPLIES & THEMES FROM CLAY ---
   Tuple *reply1_tuple = dict_find(iterator, MESSAGE_KEY_REPLY_1);
   if (reply1_tuple) {
@@ -226,14 +235,14 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   Tuple *type_tuple = dict_find(iterator, MESSAGE_KEY_DATA_TYPE);
   if(!type_tuple) {
     if(s_history_menu_layer) menu_layer_reload_data(s_history_menu_layer);
-    return; 
+    return;
   }
 
   int type = type_tuple->value->int32;
   Tuple *index_tuple = dict_find(iterator, MESSAGE_KEY_INDEX);
   int index = index_tuple ? index_tuple->value->int32 : 0;
 
-  if(type == 0) { 
+  if(type == 0) {
     if(index == 0) free_chat_list();
 
     Tuple *name_t = dict_find(iterator, MESSAGE_KEY_CHAT_NAME);
@@ -246,7 +255,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
 
        s_chat_previews[index] = malloc(strlen(preview_t->value->cstring) + 1);
        strcpy(s_chat_previews[index], preview_t->value->cstring);
-       
+
        s_chat_unreads[index] = unread_t ? unread_t->value->int32 : 0;
 
        s_num_chats = index + 1;
@@ -314,7 +323,7 @@ static void outbox_failed_callback(DictionaryIterator *iterator, AppMessageResul
 static void request_chat_history(int chat_id) {
   DictionaryIterator *iter;
   if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
-    int type = 1; 
+    int type = 1;
     dict_write_int(iter, MESSAGE_KEY_DATA_TYPE, &type, sizeof(int), true);
     dict_write_int(iter, MESSAGE_KEY_CHAT_ID, &chat_id, sizeof(int), true);
     app_message_outbox_send();
@@ -324,31 +333,37 @@ static void request_chat_history(int chat_id) {
 static void send_message_to_phone(int chat_id, const char *message) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
-  
+
   if(result == APP_MSG_OK) {
     int type = 2; // send text reply
     dict_write_int(iter, MESSAGE_KEY_DATA_TYPE, &type, sizeof(int), true);
     dict_write_int(iter, MESSAGE_KEY_CHAT_ID, &chat_id, sizeof(int), true);
     dict_write_cstring(iter, MESSAGE_KEY_MESSAGE_TEXT, message);
+
+    // ---> THE FIX: Include the specific message index if we are quoting! <---
+    if (s_action_msg_idx != -1) {
+      dict_write_int(iter, MESSAGE_KEY_INDEX, &s_action_msg_idx, sizeof(int), true);
+    }
+
     app_message_outbox_send();
-    
+
     // Optimistic UI Update!
     if (s_num_messages < MAX_MESSAGES) {
       int idx = s_num_messages;
       s_mock_senders[idx] = malloc(3); strcpy(s_mock_senders[idx], "Me");
       s_mock_messages[idx] = malloc(strlen(message) + 1); strcpy(s_mock_messages[idx], message);
-      
+
       time_t now = time(NULL);
       struct tm *t = localtime(&now);
       char time_buf[10];
       strftime(time_buf, sizeof(time_buf), clock_is_24h_style() ? "%H:%M" : "%I:%M", t);
       s_mock_timestamps[idx] = malloc(strlen(time_buf) + 1);
       strcpy(s_mock_timestamps[idx], time_buf);
-      
+
       s_mock_receipts[idx] = 1; // Artificially inject "Sent" status!
 
       s_num_messages++;
-      
+
       if(s_history_menu_layer) {
         menu_layer_reload_data(s_history_menu_layer);
         MenuIndex last_idx = get_menu_index_from_msg_idx(s_num_messages - 1);
@@ -358,21 +373,22 @@ static void send_message_to_phone(int chat_id, const char *message) {
   } else {
     APP_LOG(APP_LOG_LEVEL_ERROR, "Error preparing outbox: %d", (int)result);
   }
+  s_action_msg_idx = -1;
 }
 
 // --- NEW: REACTION TO PHONE HELPER ---
 static void send_reaction_to_phone(int chat_id, int msg_idx, const char *reaction) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
-  
+
   if(result == APP_MSG_OK) {
     int type = 4; // Type 4 = Reaction
     dict_write_int(iter, MESSAGE_KEY_DATA_TYPE, &type, sizeof(int), true);
     dict_write_int(iter, MESSAGE_KEY_CHAT_ID, &chat_id, sizeof(int), true);
-    dict_write_int(iter, MESSAGE_KEY_INDEX, &msg_idx, sizeof(int), true); 
+    dict_write_int(iter, MESSAGE_KEY_INDEX, &msg_idx, sizeof(int), true);
     dict_write_cstring(iter, MESSAGE_KEY_MESSAGE_TEXT, reaction);
     app_message_outbox_send();
-    
+
     // Provide a subtle vibration to confirm the reaction was dispatched!
     vibes_short_pulse();
   } else {
@@ -386,13 +402,14 @@ static uint16_t reaction_get_num_rows_callback(MenuLayer *menu_layer, uint16_t s
 }
 
 static int16_t reaction_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-  return 44; 
+  return 44;
 }
 
 static void reaction_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   GRect bounds = layer_get_bounds(cell_layer);
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
-  
+  (void)highlighted;
+
   // ---> THE FIX: Smart text contrast for both Color and B&W watches! <---
   #ifdef PBL_COLOR
     // On Color watches, Mint Green (Light) needs Black text, Dark Green (Dark) needs White text.
@@ -405,9 +422,9 @@ static void reaction_draw_row_callback(GContext* ctx, const Layer *cell_layer, M
       graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
     }
   #endif
-  
-  graphics_draw_text(ctx, s_reaction_labels[cell_index->row], fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
-                     GRect(8, 4, bounds.size.w - 16, 28), 
+
+  graphics_draw_text(ctx, s_reaction_labels[cell_index->row], fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     GRect(8, 4, bounds.size.w - 16, 28),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 }
 
@@ -423,7 +440,7 @@ static void reaction_window_load(Window *window) {
 
   GRect header_bounds = GRect(0, 0, bounds.size.w, 24);
   s_reaction_header_layer = text_layer_create(header_bounds);
-  
+
   text_layer_set_text(s_reaction_header_layer, "React to Message");
   text_layer_set_font(s_reaction_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_reaction_header_layer, GTextAlignmentCenter);
@@ -466,6 +483,17 @@ static void reaction_window_unload(Window *window) {
   text_layer_destroy(s_reaction_header_layer);
 }
 
+static void reaction_window_push(void) {
+  if(!s_reaction_window) {
+    s_reaction_window = window_create();
+    window_set_window_handlers(s_reaction_window, (WindowHandlers) {
+      .load = reaction_window_load,
+      .unload = reaction_window_unload
+    });
+  }
+  window_stack_push(s_reaction_window, true);
+}
+
 
 // --- CANNED MENU CALLBACKS & WINDOW ---
 static uint16_t canned_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
@@ -483,7 +511,8 @@ static int16_t canned_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex 
 static void canned_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   GRect bounds = layer_get_bounds(cell_layer);
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
-  
+  (void)highlighted;
+
   // ---> THE FIX: Smart text contrast for both Color and B&W watches! <---
   #ifdef PBL_COLOR
     // On Color watches, Mint Green (Light) needs Black text, Dark Green (Dark) needs White text.
@@ -496,7 +525,7 @@ static void canned_draw_row_callback(GContext* ctx, const Layer *cell_layer, Men
       graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
     }
   #endif
-  
+
   char *text = NULL;
   #ifdef PBL_MICROPHONE
   if (cell_index->row == 0) {
@@ -509,8 +538,8 @@ static void canned_draw_row_callback(GContext* ctx, const Layer *cell_layer, Men
   #endif
 
   // Draw custom row text properly vertically centered
-  graphics_draw_text(ctx, text, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), 
-                     GRect(8, 8, bounds.size.w - 16, 28), 
+  graphics_draw_text(ctx, text, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(8, 8, bounds.size.w - 16, 28),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
@@ -537,7 +566,7 @@ static void canned_window_load(Window *window) {
   // --- PERSISTENT TOP HEADER FOR REPLY MENU ---
   GRect header_bounds = GRect(0, 0, bounds.size.w, 24);
   s_canned_header_layer = text_layer_create(header_bounds);
-  
+
   // Dynamically insert the chat name into the header!
   snprintf(s_reply_header_buffer, sizeof(s_reply_header_buffer), "Reply to %s", s_chat_names[s_selected_chat_id]);
   text_layer_set_text(s_canned_header_layer, s_reply_header_buffer);
@@ -585,6 +614,17 @@ static void canned_window_unload(Window *window) {
   text_layer_destroy(s_canned_header_layer);
 }
 
+static void canned_window_push(void) {
+  if(!s_canned_window) {
+    s_canned_window = window_create();
+    window_set_window_handlers(s_canned_window, (WindowHandlers) {
+      .load = canned_window_load,
+      .unload = canned_window_unload
+    });
+  }
+  window_stack_push(s_canned_window, true);
+}
+
 // --- HISTORY MENU CALLBACKS & WINDOW ---
 
 #ifdef PBL_COLOR
@@ -592,8 +632,8 @@ static GColor get_highlight_shade(GColor base) {
   if (base.r <= 1 && base.g <= 1 && base.b <= 1) {
     return (GColor){ .a = 3, .r = base.r+1, .g = base.g+1, .b = base.b+1 };
   } else {
-    return (GColor){ .a = 3, .r = base.r > 0 ? base.r-1 : 0, 
-                             .g = base.g > 0 ? base.g-1 : 0, 
+    return (GColor){ .a = 3, .r = base.r > 0 ? base.r-1 : 0,
+                             .g = base.g > 0 ? base.g-1 : 0,
                              .b = base.b > 0 ? base.b-1 : 0 };
   }
 }
@@ -611,9 +651,9 @@ static uint16_t history_get_num_sections_callback(MenuLayer *menu_layer, void *d
 
 static uint16_t history_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
   if (s_num_messages == 0) return 1;
-  
+
   // NEW: Section 0 is the "Load More" button!
-  if (section_index == 0) return 1; 
+  if (section_index == 0) return 1;
 
   // For all other sections, calculate the true index by subtracting 1
   int real_section = section_index - 1;
@@ -636,12 +676,12 @@ static int16_t history_get_header_height_callback(MenuLayer *menu_layer, uint16_
 
   int real_section = section_index - 1;
   int msg_idx = get_message_index(real_section, 0);
-  
+
   bool is_me = (strcmp(s_mock_senders[msg_idx], "Me") == 0);
   bool is_1on1 = (strcmp(s_mock_senders[msg_idx], s_chat_names[s_selected_chat_id]) == 0);
 
   if (is_me || is_1on1) {
-    return 0; 
+    return 0;
   }
 
   return MENU_CELL_BASIC_HEADER_HEIGHT;
@@ -680,7 +720,7 @@ static int16_t history_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex
 
 static void history_draw_header_callback(GContext* ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
   if (s_num_messages == 0 || section_index == 0) return;
-  
+
   int real_section = section_index - 1;
   int msg_idx = get_message_index(real_section, 0);
   bool is_me = (strcmp(s_mock_senders[msg_idx], "Me") == 0);
@@ -697,7 +737,7 @@ static void history_draw_header_callback(GContext* ctx, const Layer *cell_layer,
 
   graphics_draw_text(ctx, s_mock_senders[msg_idx],
                      fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     grect_inset(bounds, GEdgeInsets(2, 4, 2, 4)), 
+                     grect_inset(bounds, GEdgeInsets(2, 4, 2, 4)),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
@@ -750,7 +790,7 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
   int real_section = cell_index->section - 1;
   int msg_idx = get_message_index(real_section, cell_index->row);
   bool is_me = (strcmp(s_mock_senders[msg_idx], "Me") == 0);
-  
+
   MenuIndex selected_index = menu_layer_get_selected_index(s_history_menu_layer);
   bool highlighted = (cell_index->section == selected_index.section && cell_index->row == selected_index.row);
 
@@ -772,10 +812,9 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
   );
 
   bool has_reaction = (s_mock_reactions[msg_idx] != NULL);
-  int reaction_padding = has_reaction ? 10 : 0;
 
   int bubble_w = text_size.w + (padding_x * 2);
-  if (bubble_w < 60) bubble_w = 60; 
+  if (bubble_w < 60) bubble_w = 60;
   int bubble_h = text_size.h + (padding_y * 2) + timestamp_h;
 
   int bubble_x = is_me ? (bounds.size.w - bubble_w - margin_x) : margin_x;
@@ -790,13 +829,13 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
 
   #ifdef PBL_COLOR
     base_color = is_me ? s_color_me : s_color_other;
-    
+
     if (highlighted) {
       bubble_color = get_highlight_shade(base_color);
     } else {
       bubble_color = base_color;
     }
-    
+
     text_color = gcolor_legible_over(bubble_color);
     time_color = gcolor_equal(text_color, GColorWhite) ? GColorLightGray : GColorDarkGray;
   #else
@@ -865,7 +904,7 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
   // ---> 8. DRAW READ RECEIPTS! <---
   if (is_me && s_mock_receipts[msg_idx] > 0) {
     int receipt = s_mock_receipts[msg_idx];
-    
+
     GColor check_color = time_color;
     #ifdef PBL_COLOR
       if (receipt >= 3) {
@@ -874,13 +913,13 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
     #endif
 
     graphics_context_set_stroke_color(ctx, check_color);
-    
+
     int cx = bubble_x + bubble_w - padding_x - 12;
-    int cy = time_rect.origin.y + 7; 
+    int cy = time_rect.origin.y + 7;
 
     graphics_draw_line(ctx, GPoint(cx, cy), GPoint(cx + 2, cy + 3));
     graphics_draw_line(ctx, GPoint(cx + 2, cy + 3), GPoint(cx + 6, cy - 3));
-    
+
     if (receipt >= 2) {
       int cx2 = cx + 5;
       graphics_draw_line(ctx, GPoint(cx2, cy), GPoint(cx2 + 2, cy + 3));
@@ -931,7 +970,7 @@ static void history_draw_row_callback(GContext* ctx, const Layer *cell_layer, Me
 }
 
 static void history_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-  if (s_num_messages == 0) return; 
+  if (s_num_messages == 0) return;
 
   // --- NEW: INTERCEPT "LOAD MORE" CLICKS ---
   if (cell_index->section == 0) {
@@ -945,21 +984,15 @@ static void history_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index
     }
     return; // Exit out before opening the reply menu!
   }
-
-  if(!s_canned_window) {
-    s_canned_window = window_create();
-    window_set_window_handlers(s_canned_window, (WindowHandlers) {
-      .load = canned_window_load,
-      .unload = canned_window_unload
-    });
-  }
-  window_stack_push(s_canned_window, true);
+  s_action_msg_idx = -1;
+  // ---> THE FIX: Just call our new helper function instead of manually building the window! <---
+  canned_window_push();
 }
 
-// --- NEW: LONG PRESS TO REACT ---
+// --- NEW: LONG PRESS TO OPEN ACTION MENU ---
 static void history_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
   if (s_num_messages == 0) return;
-  
+
   // Can't react to the "Load More" button!
   if (cell_index->section == 0) return;
 
@@ -967,15 +1000,109 @@ static void history_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_
   int real_section = cell_index->section - 1;
   s_selected_message_idx = get_message_index(real_section, cell_index->row);
 
-  // Push the Reaction Menu Window
-  if(!s_reaction_window) {
-    s_reaction_window = window_create();
-    window_set_window_handlers(s_reaction_window, (WindowHandlers) {
-      .load = reaction_window_load,
-      .unload = reaction_window_unload
+  // ---> THE FIX: Calculate if the message is "Me" using your exact string comparison! <---
+  s_action_msg_idx = s_selected_message_idx;
+  s_action_msg_is_me = (strcmp(s_mock_senders[s_selected_message_idx], "Me") == 0);
+
+  // Open the new Action Menu!
+  action_window_push();
+}
+
+// --- ACTION MENU CALLBACKS ---
+
+static uint16_t action_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  // Return 3 rows if the message is yours (React, Reply, Delete), otherwise 2 (React, Reply)
+  return s_action_msg_is_me ? 3 : 2;
+}
+
+static void action_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
+  GRect bounds = layer_get_bounds(cell_layer);
+  bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
+  (void)highlighted;
+
+  // Apply our bulletproof Dark/Light Mode text logic!
+  #ifdef PBL_COLOR
+  graphics_context_set_text_color(ctx, s_is_dark_mode ? GColorWhite : GColorBlack);
+  #else
+  if (s_is_dark_mode) {
+    graphics_context_set_text_color(ctx, highlighted ? GColorBlack : GColorWhite);
+  } else {
+    graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
+  }
+  #endif
+
+  char *text = "";
+  if (cell_index->row == 0) text = "React";
+  else if (cell_index->row == 1) text = "Reply";
+  else if (cell_index->row == 2) text = "Delete";
+
+  graphics_draw_text(ctx, text, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     GRect(8, 4, bounds.size.w - 16, 28),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+static void action_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  if (cell_index->row == 0) {
+    // 1. React
+    reaction_window_push();
+  } else if (cell_index->row == 1) {
+    // 2. Reply (using your canned replies window)
+    canned_window_push();
+  } else if (cell_index->row == 2) {
+    // 3. Delete
+    DictionaryIterator *iter;
+    if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
+      int type = 6; // Type 6 = Delete Message
+      dict_write_int(iter, MESSAGE_KEY_DATA_TYPE, &type, sizeof(int), true);
+      dict_write_int(iter, MESSAGE_KEY_CHAT_ID, &s_selected_chat_id, sizeof(int), true);
+      dict_write_int(iter, MESSAGE_KEY_INDEX, &s_action_msg_idx, sizeof(int), true);
+      app_message_outbox_send();
+
+      // Give a subtle buzz to confirm the delete request was sent!
+      vibes_short_pulse();
+    }
+    window_stack_pop(true);
+  }
+}
+
+static void action_window_load(Window *window) {
+  window_set_background_color(window, s_is_dark_mode ? GColorBlack : GColorWhite);
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_unobstructed_bounds(window_layer);
+
+  s_action_menu_layer = menu_layer_create(bounds);
+
+  #ifdef PBL_COLOR
+  menu_layer_set_normal_colors(s_action_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_action_menu_layer, s_is_dark_mode ? GColorDarkGreen : GColorMintGreen, s_is_dark_mode ? GColorWhite : GColorBlack);
+  #else
+  menu_layer_set_normal_colors(s_action_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
+  menu_layer_set_highlight_colors(s_action_menu_layer, s_is_dark_mode ? GColorWhite : GColorBlack, s_is_dark_mode ? GColorBlack : GColorWhite);
+  #endif
+
+  menu_layer_set_callbacks(s_action_menu_layer, NULL, (MenuLayerCallbacks){
+    .get_num_rows = action_get_num_rows_callback,
+    .draw_row = action_draw_row_callback,
+    .select_click = action_select_callback,
+  });
+
+  menu_layer_set_click_config_onto_window(s_action_menu_layer, window);
+  layer_add_child(window_layer, menu_layer_get_layer(s_action_menu_layer));
+}
+
+static void action_window_unload(Window *window) {
+  menu_layer_destroy(s_action_menu_layer);
+}
+
+static void action_window_push(void) {
+  if(!s_action_window) {
+    s_action_window = window_create();
+    window_set_window_handlers(s_action_window, (WindowHandlers) {
+      .load = action_window_load,
+      .unload = action_window_unload,
     });
   }
-  window_stack_push(s_reaction_window, true);
+  window_stack_push(s_action_window, true);
 }
 
 static void history_window_load(Window *window) {
@@ -986,7 +1113,7 @@ static void history_window_load(Window *window) {
 
   GRect header_bounds = GRect(0, 0, bounds.size.w, 24);
   s_history_header_layer = text_layer_create(header_bounds);
-  
+
   text_layer_set_text(s_history_header_layer, s_chat_names[s_selected_chat_id]);
   text_layer_set_font(s_history_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_history_header_layer, GTextAlignmentCenter);
@@ -1005,7 +1132,7 @@ static void history_window_load(Window *window) {
 
   GRect menu_bounds = GRect(0, 24, bounds.size.w, bounds.size.h - 24);
   s_history_menu_layer = menu_layer_create(menu_bounds);
-  
+
   menu_layer_set_normal_colors(s_history_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
   menu_layer_set_highlight_colors(s_history_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
 
@@ -1014,7 +1141,7 @@ static void history_window_load(Window *window) {
     .get_header_height = history_get_header_height_callback,
     .draw_header = history_draw_header_callback,
     .get_num_rows = history_get_num_rows_callback,
-    .get_cell_height = history_get_cell_height_callback, 
+    .get_cell_height = history_get_cell_height_callback,
     .draw_row = history_draw_row_callback,
     .select_click = history_select_callback,
     .select_long_click = history_select_long_callback, // REGISTER LONG CLICK
@@ -1026,7 +1153,7 @@ static void history_window_load(Window *window) {
 
 static void history_window_unload(Window *window) {
   menu_layer_destroy(s_history_menu_layer);
-  text_layer_destroy(s_history_header_layer); 
+  text_layer_destroy(s_history_header_layer);
 }
 
 // --- DICTATION CALLBACKS ---
@@ -1065,19 +1192,19 @@ static void menu_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
     int16_t mid_y = bounds.size.h / 2;
-    
+
     #ifdef PBL_COLOR
     graphics_context_set_text_color(ctx, GColorDarkGreen);
     #else
     graphics_context_set_text_color(ctx, GColorBlack);
     #endif
-    
-    graphics_draw_text(ctx, "Loading Chats...", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
-                       GRect(0, mid_y - 28, bounds.size.w, 28), 
+
+    graphics_draw_text(ctx, "Loading Chats...", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                       GRect(0, mid_y - 28, bounds.size.w, 28),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
-                       
-    graphics_draw_text(ctx, "Please wait", fonts_get_system_font(FONT_KEY_GOTHIC_18), 
-                       GRect(0, mid_y, bounds.size.w, 20), 
+
+    graphics_draw_text(ctx, "Please wait", fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(0, mid_y, bounds.size.w, 20),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     return;
   }
@@ -1102,48 +1229,48 @@ static void menu_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
     int badge_radius = 11;
     int badge_x = bounds.size.w - badge_radius - 8;
     int badge_y = bounds.size.h / 2;
-    
+
     // Shrink the maximum text width so long chat names don't overlap the badge
     text_width -= (badge_radius * 2 + 8);
 
     #ifdef PBL_COLOR
-      graphics_context_set_fill_color(ctx, GColorKellyGreen); 
+      graphics_context_set_fill_color(ctx, GColorKellyGreen);
       graphics_context_set_text_color(ctx, GColorWhite);
     #else
       graphics_context_set_fill_color(ctx, highlighted ? GColorWhite : GColorBlack);
       graphics_context_set_text_color(ctx, highlighted ? GColorBlack : GColorWhite);
     #endif
-    
+
     // Draw the perfect circle
     graphics_fill_circle(ctx, GPoint(badge_x, badge_y), badge_radius);
-    
+
     // Convert integer to string (cap at 99+ to prevent text overflowing the circle)
     char unread_str[4];
     snprintf(unread_str, sizeof(unread_str), "%d", unread_count > 99 ? 99 : unread_count);
-    
+
     // Draw the number perfectly centered inside the badge
-    graphics_draw_text(ctx, unread_str, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), 
-                       GRect(badge_x - 10, badge_y - 10, 20, 20), 
+    graphics_draw_text(ctx, unread_str, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(badge_x - 10, badge_y - 10, 20, 20),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
   }
 
   // Draw the bold Chat Name
   graphics_context_set_text_color(ctx, title_color);
-  graphics_draw_text(ctx, s_chat_names[cell_index->row], 
-                     fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
-                     GRect(8, 4, text_width, 28), 
+  graphics_draw_text(ctx, s_chat_names[cell_index->row],
+                     fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     GRect(8, 4, text_width, 28),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
   // Draw the subtle Message Preview directly underneath
   graphics_context_set_text_color(ctx, preview_color);
-  graphics_draw_text(ctx, s_chat_previews[cell_index->row], 
-                     fonts_get_system_font(FONT_KEY_GOTHIC_18), 
-                     GRect(8, 32, text_width, 24), 
+  graphics_draw_text(ctx, s_chat_previews[cell_index->row],
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(8, 32, text_width, 24),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static void menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-  if (s_num_chats == 0) return; 
+  if (s_num_chats == 0) return;
 
   s_selected_chat_id = cell_index->row;
 
@@ -1177,7 +1304,7 @@ static void main_window_load(Window *window) {
   // --- PERSISTENT TOP HEADER FOR MAIN MENU ---
   GRect header_bounds = GRect(0, 0, bounds.size.w, 24);
   s_main_header_layer = text_layer_create(header_bounds);
-  
+
   text_layer_set_text(s_main_header_layer, "WhatsApp");
   text_layer_set_font(s_main_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_main_header_layer, GTextAlignmentCenter);
@@ -1197,7 +1324,7 @@ static void main_window_load(Window *window) {
   // Shift the menu down to sit under the header
   GRect menu_bounds = GRect(0, 24, bounds.size.w, bounds.size.h - 24);
   s_menu_layer = menu_layer_create(menu_bounds);
-  
+
   // --- NEW: Softer Mint Green Highlight! ---
   #ifdef PBL_COLOR
   menu_layer_set_normal_colors(s_menu_layer, s_is_dark_mode ? GColorBlack : GColorWhite, s_is_dark_mode ? GColorWhite : GColorBlack);
@@ -1219,7 +1346,7 @@ static void main_window_load(Window *window) {
 
   #ifdef PBL_MICROPHONE
   s_dictation_session = dictation_session_create(sizeof(s_sent_message), dictation_session_callback, NULL);
-  dictation_session_enable_confirmation(s_dictation_session, true); 
+  dictation_session_enable_confirmation(s_dictation_session, true);
   #endif
 }
 
@@ -1238,7 +1365,7 @@ static void init() {
     .load = main_window_load,
     .unload = main_window_unload
   });
-  
+
   if (persist_exists(MESSAGE_KEY_REPLY_1)) {
     persist_read_string(MESSAGE_KEY_REPLY_1, reply_1_buffer, sizeof(reply_1_buffer));
   }
@@ -1266,13 +1393,13 @@ static void init() {
   if (persist_exists(MESSAGE_KEY_THEME_ME)) {
     s_color_me = GColorFromHEX(persist_read_int(MESSAGE_KEY_THEME_ME));
   } else {
-    s_color_me = GColorKellyGreen; 
+    s_color_me = GColorKellyGreen;
   }
-  
+
   if (persist_exists(MESSAGE_KEY_THEME_OTHER)) {
     s_color_other = GColorFromHEX(persist_read_int(MESSAGE_KEY_THEME_OTHER));
   } else {
-    s_color_other = GColorLightGray; 
+    s_color_other = GColorLightGray;
   }
   #endif
 
