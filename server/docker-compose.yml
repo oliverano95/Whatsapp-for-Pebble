@@ -4,13 +4,14 @@ services:
     container_name: whatsapp-bridge
     restart: unless-stopped
     ports:
-      - '3001:3001'
+      - '3030:3030'
     environment:
       - API_KEY=${API_KEY}
+      - PORT=${PORT}
     volumes:
       - wwebjs-auth:/app/.wwebjs_auth
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3030/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3
