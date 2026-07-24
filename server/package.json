@@ -1,0 +1,15 @@
+{
+  "name": "pebble-whatsapp-bridge-server",
+  "version": "1.0.0",
+  "description": "Backend bridge server connecting WhatsApp Web to a Pebble smartwatch app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}
