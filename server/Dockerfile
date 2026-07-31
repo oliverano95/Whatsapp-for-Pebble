@@ -40,6 +40,6 @@ RUN npm install --omit=dev
 # Copy the actual application code
 COPY server.js ./
 
-EXPOSE 3030
+EXPOSE 3001
 
 CMD ["node", "server.js"]
