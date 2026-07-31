@@ -34,11 +34,12 @@ ENV SESSION_PATH=/app/.wwebjs_auth
 
 # Install dependencies first for better layer caching
 COPY package*.json ./
+COPY patches ./patches
 RUN npm install --omit=dev
 
 # Copy the actual application code
 COPY server.js ./
 
-EXPOSE 3001
+EXPOSE 3030
 
 CMD ["node", "server.js"]
